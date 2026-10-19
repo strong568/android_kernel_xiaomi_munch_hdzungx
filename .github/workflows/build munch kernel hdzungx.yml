@@ -38,10 +38,13 @@ jobs:
             libncurses5-dev lzop python3 zip cpio liblz4-tool libtinfo5 libncurses5 \
             gcc-multilib g++-multilib lld llvm zstd libfdt-dev patch
 
-      - name: Tải AOSP Clang Toolchain (r450784d)
+      - name: Tải ZyC-Clang 16 Toolchain
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
-          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784d.tar.gz" | tar -xz -C $GITHUB_WORKSPACE/clang
+          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20230807-release/Clang-16.0.6-20230807.tar.gz" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C $GITHUB_WORKSPACE/clang
+          rm -f clang.tar.gz
+
 
       - name: Checkout mã nguồn Kernel munch (Nhánh perf)
         uses: actions/checkout@v4
