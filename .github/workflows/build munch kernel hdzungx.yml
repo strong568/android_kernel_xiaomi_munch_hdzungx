@@ -1,4 +1,4 @@
-name: Build Munch Perf Kernel (Non-KSU / KSU + SuSFS (linux 4.19) )
+name: Build Munch Perf Kernel (Non-KSU / KSU + SuSFS 4.19)
 
 permissions:
   contents: write
@@ -152,7 +152,7 @@ jobs:
                 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
                 CONFIG_KSU_SUSFS_OPEN_REDIRECT; do
-                ./scripts/config --file out/.config --enable "$cfg" \vert{}\vert{} echo "${cfg}=y" >> out/.config
+                ./scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
               done
             fi
           else
@@ -221,7 +221,7 @@ jobs:
       local r1=$(getprop ro.miui.ui.version.name 2>/dev/null)
       local r2=$(getprop ro.mi.os.version.name 2>/dev/null)
       local r3=$(getprop ro.vendor.miui.build.region 2>/dev/null)
-      if [ -n "$r1" ] || [ -n "$r2" ] \vert{}\vert{} [ -n "$r3" ]; then
+      if [ -n "$r1" ] || [ -n "$r2" ] || [ -n "$r3" ]; then
         IS_MIUI=1
       fi
     fi
