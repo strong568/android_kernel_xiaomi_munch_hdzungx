@@ -53,7 +53,6 @@ jobs:
       - name: Tải tài nguyên SuSFS (Nhánh kernel-4.19 cho SM8250)
         if: ${{ inputs.ksu_flavor != 'None' && inputs.enable_susfs }}
         run: |
-          # Clone chính xác nhánh kernel-4.19 cho nền tảng Snapdragon 870 / munch
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 susfs4ksu
           cp -r susfs4ksu/kernel_patches/fs kernel/
           cp -r susfs4ksu/kernel_patches/include/linux/susfs.h kernel/include/linux/
@@ -65,7 +64,6 @@ jobs:
           cd kernel
           FLAVOR="${{ inputs.ksu_flavor }}"
           
-          # Thiết lập driver KernelSU theo biến thể được chọn
           case "$FLAVOR" in
             "SukiSU-Ultra")
               echo "==> Thiết lập SukiSU-Ultra..."
@@ -89,11 +87,8 @@ jobs:
               ;;
           esac
 
-          # Áp dụng patch SuSFS vào KernelSU driver và fs kernel
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
             echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
-            
-            # Patch driver KSU
             KSU_DIR="KernelSU"
             [ ! -d "$KSU_DIR" ] && [ -d "drivers/kernelsu" ] && KSU_DIR="drivers/kernelsu"
             
@@ -103,7 +98,6 @@ jobs:
               cd ..
             fi
             
-            # Patch mã nguồn kernel fs
             patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
           fi
 
@@ -132,6 +126,13 @@ jobs:
           mkdir -p out
           make O=out $DEFCONFIG
 
+          # Cấu hình SELinux Enforcing
+          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
+          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX_BOOTPARAM
+          ./scripts/config --file out/.config --set-val CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE 1
+          ./scripts/config --file out/.config --disable CONFIG_SECURITY_SELINUX_DEVELOP
+          ./scripts/config --file out/.config --enable CONFIG_ALWAYS_ENFORCE
+
           # Cấu hình cờ KernelSU và toàn bộ cờ ẩn SuSFS
           if [ "${{ inputs.ksu_flavor }}" != "None" ]; then
             ./scripts/config --file out/.config --enable CONFIG_KSU
@@ -151,7 +152,8 @@ jobs:
                 CONFIG_KSU_SUSFS_ENABLE_LOG \
                 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-                CONFIG_KSU_SUSFS_OPEN_REDIRECT; do
+                CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+                CONFIG_KSU_SUSFS_SPOOF_SELINUX; do
                 ./scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
               done
             fi
@@ -162,141 +164,175 @@ jobs:
           make O=out olddefconfig
           make O=out -j$(nproc --all)
 
-      - name: Thiết lập AnyKernel3 & Tự động phát hiện AOSP / HyperOS
+      - name: Thiết lập AnyKernel3 (Chuẩn Munch & Sạch Pipa)
         run: |
-          git clone --depth=1 https://github.com/kvsnr113/AnyKernel3.git AnyKernel3[span_1](start_span)[span_1](end_span)
+          git clone --depth=1 https://github.com/kvsnr113/AnyKernel3.git AnyKernel3
           cd AnyKernel3
 
-          # Đặt lại định danh thiết bị cho munch
-          sed -i 's/devicename=pipa/devicename=munch/g' anykernel.sh
-          sed -i 's/devicename=.*/devicename=munch/' anykernel.sh
+          cat << 'EOF' > anykernel.sh
+          # AnyKernel3 Ramdisk Mod Script
+          # Munch (POCO F4) Dedicated Installer
 
-          # Ghi đè hàm configure_auto() để quét chuẩn cả HyperOS và AOSP
-          python3 -c '
-          with open("anykernel.sh", "r") as f:
-              code = f.read()
+          properties() { '
+          kernel.string=\\ Munch Perf Kernel \\
+          do.modules=0
+          do.systemless=1
+          '; }
 
-          old_auto = """configure_auto() {
-    sleep 0.5
-    miprops="$(file_getprop /vendor/build.prop "ro.vendor.miui.build.region" 2>/dev/null)"
-    if [[ -z "$miprops" ]]; then
-      miprops="$(file_getprop /product/etc/build.prop "ro.miui.build.region" 2>/dev/null)"
-    fi
-    case "$miprops" in
-      cn|in|ru|id|eu|tr|tw|gb|global|mx|jp|kr|lm|cl|mi)
-        ui_print "--> Miui/HyperOS ROM detected, configuring..."
-        rom="rom_oem"
-        if [[ "$devicename" == "pipa" ]]; then
-          dtbo="dtbo_oem_pipa"
-        else
-          dtbo="dtbo_oem"
-        fi
-        ;;
-      *)
-        ui_print "--> AOSP/CLO ROM detected, configuring..."
-        rom="rom_aosp"
-        if [[ "$devicename" == "pipa" ]]; then
-          dtbo="dtbo_def_pipa"
-        else
-          dtbo="dtbo_def"
-        fi
-       ;;
-    esac"""
+          devicecheck() {
+            local device devicename match product testname vendordevice vendorproduct;
+            device=$(getprop ro.product.device 2>/dev/null);
+            product=$(getprop ro.build.product 2>/dev/null);
+            vendordevice=$(getprop ro.product.vendor.device 2>/dev/null);
+            vendorproduct=$(getprop ro.vendor.product.device 2>/dev/null);
+            for testname in munch munchin; do
+              for devicename in $device$product $vendordevice$vendorproduct; do
+                if [ "$devicename" = "$testname" ]; then
+                  match=1
+                  break 2
+                fi
+              done
+            done
+            if [ -z "$match" ]; then
+              abort " " "Thiet bi khong ho tro (Chi ho tro Munch/POCO F4). Dang huy...";
+            fi
+          }
 
-          new_auto = """configure_auto() {
-    sleep 0.5
-    ui_print "--> Scanning system environment for ROM type..."
-    local IS_MIUI=0
-    local prop_files="/system/build.prop /system_root/system/build.prop /system_root/build.prop /vendor/build.prop /product/etc/build.prop /product/build.prop /system_ext/etc/build.prop"
-    for file in $prop_files; do
-      if [ -f "$file" ]; then
-        if grep -qE "ro.miui.ui.version|ro.mi.os.version|ro.vendor.miui.build.region|ro.miui.build.region" "$file" 2>/dev/null; then
-          IS_MIUI=1
-          break
-        fi
-      fi
-    done
+          select_option() {
+            ui_print " - $1 :"
+            ui_print "  (Vol +) $2"
+            ui_print "  (Vol -) $3"
+            SELECT_RESULT=""
+            while true; do
+              key_event=$(getevent -qlc 1)
+              case "$key_event" in
+                *"KEY_VOLUMEUP"*"DOWN"*|*"KEY_VOLUMEUP"*"1"*)
+                  ui_print "  Selected : $2" " "
+                  SELECT_RESULT="$2"
+                  break
+                  ;;
+                *"KEY_VOLUMEDOWN"*"DOWN"*|*"KEY_VOLUMEDOWN"*"1"*)
+                  ui_print "  Selected : $3" " "
+                  SELECT_RESULT="$3"
+                  break
+                  ;;
+              esac
+              sleep 0.1
+            done
+          }
 
-    if [ "$IS_MIUI" -eq 0 ]; then
-      local r1=$(getprop ro.miui.ui.version.name 2>/dev/null)
-      local r2=$(getprop ro.mi.os.version.name 2>/dev/null)
-      local r3=$(getprop ro.vendor.miui.build.region 2>/dev/null)
-      if [ -n "$r1" ] || [ -n "$r2" ] || [ -n "$r3" ]; then
-        IS_MIUI=1
-      fi
-    fi
+          configure_manual() {
+            select_option "ROM / DTBO Type" "AOSP / CLO" "MIUI / HyperOS"
+            case "$SELECT_RESULT" in
+              *AOSP*|*CLO*)
+                rom="rom_aosp"
+                dtbo="dtbo_def"
+                ;;
+              *MIUI*|*HyperOS*)
+                rom="rom_oem"
+                dtbo="dtbo_oem"
+                ;;
+            esac
+            dtb="dtb_def"
+            batt="batt_def"
+            ui_print " Cau hinh thu cong hoan tat!"
+          }
 
-    if [ "$IS_MIUI" -eq 1 ]; then
-      ui_print "--> MIUI / HyperOS ROM detected, configuring..."
-      rom="rom_oem"
-      dtbo="dtbo_oem"
-    else
-      ui_print "--> AOSP / Custom ROM detected, configuring..."
-      rom="rom_aosp"
-      dtbo="dtbo_def"
-    fi"""
+          configure_auto() {
+            sleep 0.5
+            ui_print "--> [Munch] Kiem tra loai ROM..."
+            local IS_MIUI=0
+            local prop_files="/system/build.prop /system_root/system/build.prop /system_root/build.prop /vendor/build.prop /product/etc/build.prop /product/build.prop /system_ext/etc/build.prop"
+            for file in $prop_files; do
+              if [ -f "$file" ]; then
+                if grep -qE "ro.miui.ui.version|ro.mi.os.version|ro.vendor.miui.build.region|ro.miui.build.region" "$file" 2>/dev/null; then
+                  IS_MIUI=1
+                  break
+                fi
+              fi
+            done
 
-          if old_auto in code:
-              code = code.replace(old_auto, new_auto)
-          else:
-              code = code.replace("miprops=\"$(file_getprop", "IS_MIUI=1 # bypass\n  miprops=\"$(file_getprop")
+            if [ "$IS_MIUI" -eq 0 ]; then
+              local r1=$(getprop ro.miui.ui.version.name 2>/dev/null)
+              local r2=$(getprop ro.mi.os.version.name 2>/dev/null)
+              local r3=$(getprop ro.vendor.miui.build.region 2>/dev/null)
+              if [ -n "$r1" ] || [ -n "$r2" ] || [ -n "$r3" ]; then
+                IS_MIUI=1
+              fi
+            fi
 
-          with open("anykernel.sh", "w") as f:
-              f.write(code)
-          '
-          cd ..
+            if [ "$IS_MIUI" -eq 1 ]; then
+              ui_print "--> Phat hien: MIUI / HyperOS ROM"
+              rom="rom_oem"
+              dtbo="dtbo_oem"
+            else
+              ui_print "--> Phat hien: AOSP / Custom ROM"
+              rom="rom_aosp"
+              dtbo="dtbo_def"
+            fi
 
-      - name: Đóng gói Kernel ZIP (Chuẩn MUNCH-*)
-        run: |
-          TARGET="MUNCH[span_2](start_span)"[span_2](end_span)
+            dtb="dtb_def"
+            batt="batt_def"
+            ui_print "--> Da thiet lap xong cho Munch!"
+          }
 
-          # Di chuyển các tệp nhị phân vừa biên dịch sang AnyKernel3 theo định dạng MUNCH-*
-          if [ -f "kernel/out/arch/arm64/boot/Image" ]; then
-            cp kernel/out/arch/arm64/boot/Image "AnyKernel3/${TARGET}-Image[span_3](start_span)"[span_3](end_span)
-          elif [ -f "kernel/out/arch/arm64/boot/Image.gz" ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz "AnyKernel3/${TARGET}-Image"
+          choose_config_mode() {
+            ui_print "--> Chon che do cau hinh :"
+            ui_print "  (Vol +) Chon thu cong"
+            ui_print "  (Vol -) Tu dong nhan dien"
+            ui_print "  ! Mac dinh Tu dong sau 8 giay"
+
+            local timeout=8
+            local start now key_event
+            start=$(date +%s)
+
+            while :; do
+              key_event=$(timeout 0.2 getevent -qlc 1 2>/dev/null)
+              if [ -n "$key_event" ]; then
+                if echo "$key_event" | grep -q "KEY_VOLUMEUP"; then
+                  ui_print "  Da chon : Thu cong" " "
+                  configure_manual
+                  return 0
+                fi
+                if echo "$key_event" | grep -q "KEY_VOLUMEDOWN"; then
+                  ui_print "  Da chon : Tu dong" " "
+                  configure_auto
+                  return 0
+                fi
+              fi
+              now=$(date +%s)
+              if [ $((now - start)) -ge$timeout ]; then
+                ui_print "  ! Het thoi gian cho (Mac dinh: Tu dong)" " "
+                configure_auto
+                return 0
+              fi
+            done
+          }
+
+          devicename=munch
+          devicename2=munchin
+          is_slot_device=1
+          block=/dev/block/bootdevice/by-name/boot
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+
+          . tools/ak3-core.sh
+
+          if [ -f /vendor/OemPorts10T.prop ] || [ -f /vendor/etc/init/OemPorts10T.rc ]; then
+            abort " ROM OPLUS Port khong duoc ho tro!"
           fi
 
-          [ -f "kernel/out/arch/arm64/boot/dtb" ] && cp kernel/out/arch/arm64/boot/dtb "AnyKernel3/${TARGET}-dtb[span_4](start_span)"[span_4](end_span)
-          [ -f "kernel/out/arch/arm64/boot/dtbo.img" ] && cp kernel/out/arch/arm64/boot/dtbo.img "AnyKernel3/${TARGET}-dtbo.img[span_5](start_span)"[span_5](end_span)
-
-          # Đặt tên gói ZIP xuất xưởng
-          KSU_LABEL="${{ inputs.ksu_flavor == 'None' && 'NonKSU' || inputs.ksu_flavor }}"
-          SAFE_LABEL=$(echo "$KSU_LABEL" | tr -d ' ()' | tr '/' '-')[span_6](start_span)[span_6](end_span)
-
-          ZIP_NAME="Munch-Perf-${SAFE_LABEL}"
-          if [ "${{ inputs.ksu_flavor }}" != "None" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            ZIP_NAME="${ZIP_NAME}-SuSFS[span_7](start_span)"[span_7](end_span)
+          if [ "$SIDELOAD" = "1" ]; then
+            configure_manual
+          else
+            choose_config_mode
           fi
-          ZIP_NAME="${ZIP_NAME}-$(date +%y%m%d-%H%M).zip[span_8](start_span)"[span_8](end_span)
 
-          cd AnyKernel3
-          zip -r9 "../${ZIP_NAME}" META-INF tools ${TARGET}-* anykernel.sh -x "*.git*[span_9](start_span)"[span_9](end_span)
-          cd ..
+          mv *-Image $home/Image 2>/dev/null || true
+          mv *-dtb $home/dtb 2>/dev/null || true
+          mv *-dtbo.img $home/dtbo.img 2>/dev/null || true
 
-          echo "ZIP_PATH=${ZIP_NAME}" >> $GITHUB_ENV[span_10](start_span)[span_10](end_span)
-          echo "TAG_NAME=perf-build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV
- >> $GITHUB_ENV[span_11](start_span)[span_11](end_span)
-
-      - name: Lưu trữ Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ZIP_PATH }}
-          path: ${{ env.ZIP_PATH }}
-
-      - name: Phát hành GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: "Kernel Munch Perf [${{ inputs.ksu_flavor == 'None' && 'Non-KSU' || inputs.ksu_flavor }}]"
-          body: |
-            ### 📌 Thông tin bản build Kernel POCO F4 (munch - perf)
-            - **Nhánh Kernel:** `perf`
-            - **Biến thể Root:** `${{ inputs.ksu_flavor == 'None' && 'Non-KSU (Stock / Clean Base)' || inputs.ksu_flavor }}`
-            - **SuSFS Support:** `${{ (inputs.ksu_flavor != 'None' && inputs.enable_susfs) && 'Enabled (Full Flags - 4.19)' || 'Disabled' }}`
-            - **AnyKernel3:** Tự động phát hiện môi trường AOSP / HyperOS qua file cấu hình `build.prop`
-            - **Tên tệp:** `${{ env.ZIP_PATH }}`
-          files: |
-            ${{ env.ZIP_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          dump_boot
+          ui_print "--> Dang ap dung thiet lap..."
+          ui_print " Thong so: $rom,$dtbo,$dtb,$batt"
+          patch_cmdline "e404_args" "hdzungx_args=$rom,$
