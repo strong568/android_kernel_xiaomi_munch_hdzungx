@@ -90,14 +90,20 @@ jobs:
                 ;;
             esac
 
-            # Đồng bộ symlink an toàn giữa KernelSU và drivers/kernelsu
-            if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+            # Đồng bộ symlink giữa KernelSU và drivers/kernelsu
+            if [ -d "KernelSU" ] && [ ! -e "drivers/kernelsu" ]; then
               ln -sfn ../KernelSU drivers/kernelsu
-            elif [ -d "drivers/kernelsu" ] && [ ! -d "KernelSU" ]; then
+            elif [ -d "drivers/kernelsu" ] && [ ! -e "KernelSU" ]; then
               ln -sfn drivers/kernelsu KernelSU
             fi
 
-            # 2. Áp dụng Patch SuSFS nếu được bật
+            # FIX LỖI: Tạo symlink ksu -> . nếu Makefile yêu cầu đường dẫn drivers/kernelsu/ksu
+            if [ -d "drivers/kernelsu" ] && [ ! -e "drivers/kernelsu/ksu" ]; then
+              echo "==> Tạo symlink tương thích: drivers/kernelsu/ksu -> ."
+              ln -sfn . drivers/kernelsu/ksu
+            fi
+
+            # 2. Áp dụng Patch SuSFS nếu bật
             if [ "${{ inputs.enable_susfs }}" = "true" ]; then
               echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
               KSU_DIR="KernelSU"
@@ -111,24 +117,20 @@ jobs:
               
               patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
             fi
-          fi
 
-          # BẢO HIỂM CUỐI CÙNG: Đảm bảo drivers/kernelsu/Kconfig luôn tồn tại trước khi make
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-            echo "==> drivers/kernelsu/Kconfig chưa tồn tại! Đang tạo dummy fallback..."
-            mkdir -p drivers/kernelsu
-            cat << 'EOF' > drivers/kernelsu/Kconfig
-          menu "KernelSU Dummy"
-          config KSU
-            bool "KernelSU Dummy Support"
-            default n
-          endmenu
-          EOF
+          else
+            # Xử lý trường hợp Non-KSU sạch: Tạo dummy đầy đủ cấu trúc
+            echo "==> Chế độ Non-KSU: Tạo dummy drivers/kernelsu/Kconfig & Makefile..."
+            mkdir -p drivers/kernelsu/ksu
+            echo '# Dummy Kconfig' > drivers/kernelsu/Kconfig
             echo 'obj-$(CONFIG_KSU) += ksu/' > drivers/kernelsu/Makefile
+            echo '# Dummy ksu Makefile' > drivers/kernelsu/ksu/Makefile
           fi
 
-          # Kiểm tra xác thực file Kconfig trước khi thoát step
-          ls -la drivers/kernelsu/Kconfig
+          # BẢO HIỂM CUỐI: Đảm bảo ksu/Makefile luôn tồn tại trước khi make
+          if [ ! -f "drivers/kernelsu/ksu/Makefile" ] && [ ! -L "drivers/kernelsu/ksu" ]; then
+            ln -sfn . drivers/kernelsu/ksu 2>/dev/null || mkdir -p drivers/kernelsu/ksu && touch drivers/kernelsu/ksu/Makefile
+          fi
 
 
       - name: Biên dịch Kernel munch
