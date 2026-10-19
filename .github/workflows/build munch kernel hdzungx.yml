@@ -66,6 +66,7 @@ jobs:
           FLAVOR="${{ inputs.ksu_flavor }}"
           
           if [ "$FLAVOR" != "None" ]; then
+            # 1. Tải driver KernelSU theo biến thể được chọn
             case "$FLAVOR" in
               "SukiSU-Ultra")
                 echo "==> Thiết lập SukiSU-Ultra..."
@@ -89,13 +90,14 @@ jobs:
                 ;;
             esac
 
-            # Đồng bộ liên kết KernelSU và drivers/kernelsu để Kconfig luôn tìm thấy file
+            # Đồng bộ symlink an toàn giữa KernelSU và drivers/kernelsu
             if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
-              ln -s ../KernelSU drivers/kernelsu
+              ln -sfn ../KernelSU drivers/kernelsu
             elif [ -d "drivers/kernelsu" ] && [ ! -d "KernelSU" ]; then
-              ln -s drivers/kernelsu KernelSU
+              ln -sfn drivers/kernelsu KernelSU
             fi
 
+            # 2. Áp dụng Patch SuSFS nếu được bật
             if [ "${{ inputs.enable_susfs }}" = "true" ]; then
               echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
               KSU_DIR="KernelSU"
@@ -109,14 +111,25 @@ jobs:
               
               patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
             fi
+          fi
 
-          else
-            # Xử lý Non-KSU: Tạo thư mục và Kconfig giả lập để fix lỗi can't open file "drivers/kernelsu/Kconfig"
-            echo "==> Chế độ Non-KSU: Tạo dummy drivers/kernelsu/Kconfig..."
+          # BẢO HIỂM CUỐI CÙNG: Đảm bảo drivers/kernelsu/Kconfig luôn tồn tại trước khi make
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+            echo "==> drivers/kernelsu/Kconfig chưa tồn tại! Đang tạo dummy fallback..."
             mkdir -p drivers/kernelsu
-            echo '# Dummy Kconfig for Non-KSU build' > drivers/kernelsu/Kconfig
+            cat << 'EOF' > drivers/kernelsu/Kconfig
+          menu "KernelSU Dummy"
+          config KSU
+            bool "KernelSU Dummy Support"
+            default n
+          endmenu
+          EOF
             echo 'obj-$(CONFIG_KSU) += ksu/' > drivers/kernelsu/Makefile
           fi
+
+          # Kiểm tra xác thực file Kconfig trước khi thoát step
+          ls -la drivers/kernelsu/Kconfig
+
 
       - name: Biên dịch Kernel munch
         run: |
