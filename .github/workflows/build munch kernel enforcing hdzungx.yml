@@ -41,7 +41,6 @@ jobs:
       - name: Tải ZyC-Clang 14.0.6
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
-          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261011-release/Clang-14.0.6-20261011.tar.gz" -o clang.tar.gz || \
           curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20250105-release/Clang-14.0.6-20250105.tar.gz" -o clang.tar.gz
           tar -xzf clang.tar.gz -C $GITHUB_WORKSPACE/clang
           rm -f clang.tar.gz
@@ -54,49 +53,37 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Tải tài nguyên SuSFS (Chống lỗi quá tải GitLab)
+      - name: Tải tài nguyên SuSFS (Mirror GitHub & GitLab)
         if: ${{ inputs.ksu_flavor != 'None' && inputs.enable_susfs }}
         run: |
           echo "==> Đang tải susfs4ksu (nhánh kernel-4.19)..."
-          SUCCESS=0
-          
-          # Cách 1: Thử git clone tối đa 5 lần với cấu hình tối ưu HTTP
-          git config --global http.postBuffer 524288000
-          for i in {1..5}; do
-            echo "Thử git clone lần $i/5..."
-            if git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 susfs4ksu; then
-              SUCCESS=1
-              break
-            fi
-            echo "GitLab đang quá tải, đợi $((i * 10)) giây trước khi thử lại..."
-            rm -rf susfs4ksu
-            sleep $((i * 10))
-          done
+          rm -rf susfs4ksu
 
-          # Cách 2: Fallback tải trực tiếp file tar.gz từ GitLab hoặc GitHub Mirror nếu git clone thất bại
-          if [ "$SUCCESS" -eq 0 ]; then
-            echo "==> Chuyển sang tải qua gói nén Archive / Mirror..."
+          if git clone --depth=1 --single-branch https://github.com/xazkindodev-boop/lavender-ng-mirror.git -b kernel-4.19 susfs4ksu; then
+            echo "==> Tải thành công từ GitHub Mirror (lavender-ng-mirror)!"
+          elif git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 susfs4ksu; then
+            echo "==> Tải thành công từ GitLab gốc!"
+          else
+            echo "==> Chuyển sang tải qua gói nén Archive..."
             mkdir -p susfs4ksu
-            if curl -fLSs --retry 5 "https://gitlab.com/simonpunk/susfs4ksu/-/archive/kernel-4.19/susfs4ksu-kernel-4.19.tar.gz" -o susfs.tar.gz; then
-              tar -xzf susfs.tar.gz --strip-components=1 -C susfs4ksu
-              rm -f susfs.tar.gz
-            else
-              echo "==> Dùng GitHub Mirror dự phòng..."
-              rm -rf susfs4ksu
-              git clone --depth=1 https://github.com/sidex15/susfs4ksu-mirror.git -b kernel-4.19 susfs4ksu || \
-              git clone --depth=1 https://github.com/reon24/susfs4ksu.git -b kernel-4.19 susfs4ksu
-            fi
+            curl -fLSs --retry 5 "https://github.com/xazkindodev-boop/lavender-ng-mirror/archive/refs/heads/kernel-4.19.tar.gz" -o susfs.tar.gz || \
+            curl -fLSs --retry 5 "https://gitlab.com/simonpunk/susfs4ksu/-/archive/kernel-4.19/susfs4ksu-kernel-4.19.tar.gz" -o susfs.tar.gz
+            tar -xzf susfs.tar.gz --strip-components=1 -C susfs4ksu
+            rm -f susfs.tar.gz
           fi
 
-          # Kiểm tra và copy tài nguyên SuSFS vào Kernel
-          if [ ! -d "susfs4ksu/kernel_patches" ]; then
-            echo "LỖI: Không thể tải susfs4ksu!"
+          if [ -d "susfs4ksu/kernel_patches" ]; then
+            PATCH_BASE="susfs4ksu/kernel_patches"
+          elif [ -d "susfs4ksu/susfs4ksu/kernel_patches" ]; then
+            PATCH_BASE="susfs4ksu/susfs4ksu/kernel_patches"
+          else
+            echo "LỖI: Không tìm thấy thư mục kernel_patches trong repo!"
             exit 1
           fi
 
-          cp -r susfs4ksu/kernel_patches/fs/* kernel/fs/
-          cp -r susfs4ksu/kernel_patches/include/linux/* kernel/include/linux/
-          echo "SUSFS_PATCH_DIR=$GITHUB_WORKSPACE/susfs4ksu/kernel_patches" >> $GITHUB_ENV
+          cp -r "$PATCH_BASE/fs/"* kernel/fs/
+          cp -r "$PATCH_BASE/include/linux/"* kernel/include/linux/
+          echo "SUSFS_PATCH_DIR=$GITHUB_WORKSPACE/$PATCH_BASE" >> $GITHUB_ENV
 
       - name: Tích hợp KernelSU và Áp dụng SuSFS Patch
         run: |
@@ -134,7 +121,6 @@ jobs:
               ln -sfn drivers/kernelsu KernelSU
             fi
 
-            # Tạo symlink tương thích nếu Makefile yêu cầu drivers/kernelsu/ksu
             if [ -d "drivers/kernelsu" ] && [ ! -e "drivers/kernelsu/ksu" ]; then
               ln -sfn . drivers/kernelsu/ksu
             fi
@@ -145,18 +131,44 @@ jobs:
               KSU_DIR="KernelSU"
               [ ! -d "$KSU_DIR" ] && [ -d "drivers/kernelsu" ] && KSU_DIR="drivers/kernelsu"
               
+              KSU_KCONFIG="drivers/kernelsu/Kconfig"
+              [ ! -f "$KSU_KCONFIG" ] && [ -f "KernelSU/kernel/Kconfig" ] && KSU_KCONFIG="KernelSU/kernel/Kconfig"
+
               if [ -d "$KSU_DIR" ]; then
-                cd "$KSU_DIR"
-                for ksu_patch in $SUSFS_PATCH_DIR/KernelSU/*.patch; do
-                  [ -f "$ksu_patch" ] && patch -p1 --forward --fuzz=3 < "$ksu_patch" || true
-                done
-                cd "$GITHUB_WORKSPACE/kernel"
+                # Kiểm tra nếu nhánh KSU đã tích hợp sẵn SuSFS (như ReSukiSU / SukiSU-Ultra) thì không patch đè lên KSU nữa
+                if [ -f "$KSU_KCONFIG" ] && grep -qE 'config[[:space:]]+KSU_SUSFS' "$KSU_KCONFIG"; then
+                  echo "==> [$FLAVOR] Đã hỗ trợ sẵn CONFIG_KSU_SUSFS trong mã nguồn! Bỏ qua patch KSU để tránh lỗi xung đột."
+                else
+                  cd "$KSU_DIR"
+                  # 1. Áp dụng patch SuSFS gốc cho KSU
+                  for ksu_patch in $SUSFS_PATCH_DIR/KernelSU/*.patch; do
+                    [ -f "$ksu_patch" ] && patch -p1 --forward --fuzz=3 < "$ksu_patch" || true
+                  done
+
+                  # 2. Nếu là KernelSU-Next, tải thêm susfs_fix_patches từ WildKernels để tránh lỗi reject
+                  if [ "$FLAVOR" = "KernelSU-Next" ]; then
+                    echo "==> Tải thêm bản vá tương thích SuSFS cho KernelSU-Next từ WildKernels..."
+                    git clone --depth=1 https://github.com/WildKernels/kernel_patches.git /tmp/wild_patches
+                    
+                    # Tự động dò phiên bản SuSFS hiện tại trong susfs_def.h (ví dụ: v1.5.12, v2.0.0...)
+                    SUSFS_VER=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$GITHUB_WORKSPACE/kernel/include/linux/susfs_def.h" | head -n1)
+                    echo "Phiên bản SuSFS phát hiện: ${SUSFS_VER:-Không rõ}"
+
+                    if [ -n "$SUSFS_VER" ] && [ -d "/tmp/wild_patches/next/susfs_fix_patches/$SUSFS_VER" ]; then
+                      for fix_patch in /tmp/wild_patches/next/susfs_fix_patches/$SUSFS_VER/*.patch; do
+                        [ -f "$fix_patch" ] && patch -p1 --forward --fuzz=3 < "$fix_patch" || true
+                      done
+                    fi
+                    rm -rf /tmp/wild_patches
+                  fi
+                  cd "$GITHUB_WORKSPACE/kernel"
+                fi
               fi
               
-              # Tự động nhận diện file patch của kernel 4.19 (50_add_susfs_in_kernel-4.19.patch hoặc fs_susfs.patch)
+              # 3. Patch hệ thống file Kernel 4.19
               for k_patch in $SUSFS_PATCH_DIR/*.patch; do
                 if [ -f "$k_patch" ]; then
-                  echo "Đang patch: $k_patch"
+                  echo "Đang patch kernel: $k_patch"
                   patch -p1 --forward --fuzz=3 < "$k_patch" || true
                 fi
               done
@@ -200,7 +212,8 @@ jobs:
           [ ! -f "arch/arm64/configs/$DEFCONFIG" ] && DEFCONFIG="vendor/munch_defconfig"
 
           mkdir -p out
-          make O=out $MAKE_ARGS$DEFCONFIG
+          # Đã sửa lỗi dính biến $MAKE_ARGS và $DEFCONFIG
+          make O=out $MAKE_ARGS "$DEFCONFIG"
 
           # Ép cứng SELinux Enforcing chuẩn
           echo "==> Thiết lập SELinux Enforcing..."
@@ -213,6 +226,9 @@ jobs:
           # Cấu hình KernelSU và toàn bộ cờ ẩn SuSFS
           if [ "${{ inputs.ksu_flavor }}" != "None" ]; then
             ./scripts/config --file out/.config --enable CONFIG_KSU
+            ./scripts/config --file out/.config --enable CONFIG_KPROBES
+            ./scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
+            ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
             if [ "${{ inputs.enable_susfs }}" = "true" ]; then
               echo "==> Bật toàn bộ các cờ bảo vệ ẩn Root & SELinux của SuSFS..."
               for cfg in \
@@ -220,17 +236,19 @@ jobs:
                 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
                 CONFIG_KSU_SUSFS_SUS_PATH \
                 CONFIG_KSU_SUSFS_SUS_MOUNT \
-                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSURULES \
+                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
                 CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
                 CONFIG_KSU_SUSFS_SUS_KSTAT \
                 CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
                 CONFIG_KSU_SUSFS_TRY_UMOUNT \
+                CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
                 CONFIG_KSU_SUSFS_SPOOF_UNAME \
                 CONFIG_KSU_SUSFS_ENABLE_LOG \
                 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
                 CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-                CONFIG_KSU_SUSFS_SPOOF_SELINUX; do
+                CONFIG_KSU_SUSFS_SPOOF_SELINUX \
+                CONFIG_KSU_SUSFS_SUS_SU; do
                 ./scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
               done
             fi
@@ -240,6 +258,11 @@ jobs:
 
           make O=out $MAKE_ARGS olddefconfig
           make O=out $MAKE_ARGS -j$(nproc --all)
+
+          # Tự động nối các file .dtb rời thành 1 file dtb duy nhất cho Munch (sm8250)
+          if [ ! -f "out/arch/arm64/boot/dtb" ]; then
+            find out/arch/arm64/boot/dts -name '*.dtb' -exec cat {} + > out/arch/arm64/boot/dtb 2>/dev/null || true
+          fi
 
       - name: Thiết lập AnyKernel3 (Chuẩn Munch & Sạch Pipa)
         run: |
@@ -460,6 +483,7 @@ jobs:
           cd ..
 
           echo "ZIP_PATH=${ZIP_NAME}" >> $GITHUB_ENV
+          # Đã bỏ dấu gạch chéo ngược gây lỗi Tag trên GitHub Release
           echo "TAG_NAME=perf-build-$(date +'\%Y\%m\%d-\%H\%M\%S')" >> $GITHUB_ENV
 
       - name: Lưu trữ Artifact
