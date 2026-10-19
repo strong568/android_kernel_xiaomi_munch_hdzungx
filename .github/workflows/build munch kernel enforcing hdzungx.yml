@@ -11,10 +11,10 @@ on:
         required: true
         type: choice
         options:
+          - 'ReSukiSU'
           - 'KernelSU-Next'
           - 'SukiSU-Ultra'
           - 'backslashxx-KernelSU'
-          - 'ReSukiSU'
           - 'KowSU'
           - 'None'
         default: 'ReSukiSU'
@@ -37,7 +37,6 @@ jobs:
             bc bison build-essential ccache curl flex git libssl-dev libelf-dev \
             libncurses5-dev lzop python3 zip cpio liblz4-tool libtinfo5 libncurses5 \
             lld llvm zstd libfdt-dev patch
-
 
       - name: Tải ZyC-Clang 14.0.6
         run: |
@@ -91,11 +90,11 @@ jobs:
                 ;;
             esac
 
-            # Đồng bộ đường dẫn: đảm bảo cả KernelSU và drivers/kernelsu đều trỏ đúng
-            if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
-              ln -s ../KernelSU drivers/kernelsu
-            elif [ -d "drivers/kernelsu" ] && [ ! -d "KernelSU" ]; then
-              ln -s drivers/kernelsu KernelSU
+            # Đồng bộ an toàn (dùng -sf và kiểm tra tồn tại để không bao giờ văng lỗi File exists)
+            if [ -d "KernelSU" ] && [ ! -e "drivers/kernelsu" ]; then
+              ln -sf ../KernelSU drivers/kernelsu
+            elif [ -d "drivers/kernelsu" ] && [ ! -e "KernelSU" ]; then
+              ln -sf drivers/kernelsu KernelSU
             fi
 
             # 2. Áp dụng Patch SuSFS nếu bật
@@ -122,13 +121,11 @@ jobs:
             echo 'obj-$(CONFIG_KSU) += ksu/' > drivers/kernelsu/Makefile
           fi
 
-
       - name: Biên dịch Kernel munch
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
 
-          # Thiết lập prefix trỏ vào Clang toolchain
           MAKE_ARGS="
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -150,47 +147,7 @@ jobs:
           [ ! -f "arch/arm64/configs/$DEFCONFIG" ] && DEFCONFIG="vendor/munch_defconfig"
 
           mkdir -p out
-          make O=out $MAKE_ARGS $DEFCONFIG
-
-          # Ép cứng SELinux Enforcing chuẩn
-          echo "==> Thiết lập SELinux Enforcing..."
-          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
-          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX_BOOTPARAM
-          ./scripts/config --file out/.config --set-val CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE 1
-          ./scripts/config --file out/.config --disable CONFIG_SECURITY_SELINUX_DEVELOP
-          ./scripts/config --file out/.config --enable CONFIG_ALWAYS_ENFORCE
-
-          # Cấu hình KernelSU và toàn bộ cờ ẩn SuSFS
-          if [ "${{ inputs.ksu_flavor }}" != "None" ]; then
-            ./scripts/config --file out/.config --enable CONFIG_KSU
-            if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-              echo "==> Bật toàn bộ các cờ bảo vệ ẩn Root & SELinux của SuSFS..."
-              for cfg in \
-                CONFIG_KSU_SUSFS \
-                CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
-                CONFIG_KSU_SUSFS_SUS_PATH \
-                CONFIG_KSU_SUSFS_SUS_MOUNT \
-                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSURULES \
-                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-                CONFIG_KSU_SUSFS_SUS_KSTAT \
-                CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
-                CONFIG_KSU_SUSFS_TRY_UMOUNT \
-                CONFIG_KSU_SUSFS_SPOOF_UNAME \
-                CONFIG_KSU_SUSFS_ENABLE_LOG \
-                CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-                CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-                CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-                CONFIG_KSU_SUSFS_SPOOF_SELINUX; do
-                ./scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
-              done
-            fi
-          else
-            ./scripts/config --file out/.config --disable CONFIG_KSU
-          fi
-
-          make O=out $MAKE_ARGS olddefconfig
-          make O=out $MAKE_ARGS -j$(nproc --all)
-
+          make O=out $MAKE_ARGS$DEFCONFIG
 
           # Ép cứng SELinux Enforcing chuẩn
           echo "==> Thiết lập SELinux Enforcing..."
@@ -233,7 +190,7 @@ jobs:
 
       - name: Thiết lập AnyKernel3 (Chuẩn Munch & Sạch Pipa)
         run: |
-          git clone --depth=1 https://github.com/kvsnr113/AnyKernel3.git AnyKernel3[span_6](start_span)[span_6](end_span)
+          git clone --depth=1 https://github.com/kvsnr113/AnyKernel3.git AnyKernel3
           cd AnyKernel3
 
           cat << 'EOF' > anykernel.sh
@@ -422,31 +379,31 @@ jobs:
 
       - name: Đóng gói Kernel ZIP (Chuẩn MUNCH-*)
         run: |
-          TARGET="MUNCH[span_7](start_span)"[span_7](end_span)
+          TARGET="MUNCH"
 
           if [ -f "kernel/out/arch/arm64/boot/Image" ]; then
-            cp kernel/out/arch/arm64/boot/Image "AnyKernel3/${TARGET}-Image[span_8](start_span)"[span_8](end_span)
+            cp kernel/out/arch/arm64/boot/Image "AnyKernel3/${TARGET}-Image"
           elif [ -f "kernel/out/arch/arm64/boot/Image.gz" ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz "AnyKernel3/${TARGET}-Image[span_9](start_span)"[span_9](end_span)
+            cp kernel/out/arch/arm64/boot/Image.gz "AnyKernel3/${TARGET}-Image"
           fi
 
-          [ -f "kernel/out/arch/arm64/boot/dtb" ] && cp kernel/out/arch/arm64/boot/dtb "AnyKernel3/${TARGET}-dtb[span_10](start_span)"[span_10](end_span)
-          [ -f "kernel/out/arch/arm64/boot/dtbo.img" ] && cp kernel/out/arch/arm64/boot/dtbo.img "AnyKernel3/${TARGET}-dtbo.img[span_11](start_span)"[span_11](end_span)
+          [ -f "kernel/out/arch/arm64/boot/dtb" ] && cp kernel/out/arch/arm64/boot/dtb "AnyKernel3/${TARGET}-dtb"
+          [ -f "kernel/out/arch/arm64/boot/dtbo.img" ] && cp kernel/out/arch/arm64/boot/dtbo.img "AnyKernel3/${TARGET}-dtbo.img"
 
           KSU_LABEL="${{ inputs.ksu_flavor == 'None' && 'NonKSU' || inputs.ksu_flavor }}"
-          SAFE_LABEL=$(echo "$KSU_LABEL" | tr -d ' ()' | tr '/' '-')[span_12](start_span)[span_12](end_span)
+          SAFE_LABEL=$(echo "$KSU_LABEL" | tr -d ' ()' | tr '/' '-')
 
           ZIP_NAME="Munch-Perf-${SAFE_LABEL}"
           if [ "${{ inputs.ksu_flavor }}" != "None" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            ZIP_NAME="${ZIP_NAME}-SuSFS[span_13](start_span)"[span_13](end_span)
+            ZIP_NAME="${ZIP_NAME}-SuSFS"
           fi
-          ZIP_NAME="${ZIP_NAME}-$(date +%y%m%d-%H%M).zip[span_14](start_span)"[span_14](end_span)
+          ZIP_NAME="${ZIP_NAME}-$(date +'%Y%m%d-%H%M').zip"
 
           cd AnyKernel3
-          zip -r9 "../${ZIP_NAME}" META-INF tools ${TARGET}-* anykernel.sh -x "*.git*[span_15](start_span)"[span_15](end_span)
+          zip -r9 "../${ZIP_NAME}" META-INF tools ${TARGET}-* anykernel.sh -x "*.git*"
           cd ..
 
-          echo "ZIP_PATH=${ZIP_NAME}" >> $GITHUB_ENV[span_16](start_span)[span_16](end_span)
+          echo "ZIP_PATH=${ZIP_NAME}" >> $GITHUB_ENV
           echo "TAG_NAME=perf-build-$(date +'\%Y\%m\%d-\%H\%M\%S')" >> $GITHUB_ENV
 
       - name: Lưu trữ Artifact
