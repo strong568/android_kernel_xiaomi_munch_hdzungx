@@ -38,10 +38,10 @@ jobs:
             libncurses5-dev lzop python3 zip cpio liblz4-tool libtinfo5 libncurses5 \
             gcc-multilib g++-multilib lld llvm zstd libfdt-dev patch
 
-      - name: Tải ZyC-Clang 16 Toolchain
+      - name: Tải ZyC-Clang 14.0.6
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
-          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20230807-release/Clang-16.0.6-20230807.tar.gz" -o clang.tar.gz
+          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261011-release/Clang-14.0.6-20261011.tar.gz" -o clang.tar.gz
           tar -xzf clang.tar.gz -C $GITHUB_WORKSPACE/clang
           rm -f clang.tar.gz
 
