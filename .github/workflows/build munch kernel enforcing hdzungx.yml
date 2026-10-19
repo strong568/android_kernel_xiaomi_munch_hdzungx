@@ -36,12 +36,13 @@ jobs:
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex git libssl-dev libelf-dev \
             libncurses5-dev lzop python3 zip cpio liblz4-tool libtinfo5 libncurses5 \
-            lld llvm zstd libfdt-dev patch
+            lld llvm zstd libfdt-dev patch gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Tải ZyC-Clang 14.0.6
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
-          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261011-release/Clang-14.0.6-20261011.tar.gz" -o clang.tar.gz
+          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261011-release/Clang-14.0.6-20261011.tar.gz" -o clang.tar.gz || \
+          curl -fLSs --retry 5 "https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20250105-release/Clang-14.0.6-20250105.tar.gz" -o clang.tar.gz
           tar -xzf clang.tar.gz -C $GITHUB_WORKSPACE/clang
           rm -f clang.tar.gz
 
@@ -51,13 +52,50 @@ jobs:
           repository: munch-devs/android_kernel_xiaomi_munch
           ref: perf
           path: kernel
+          fetch-depth: 1
 
-      - name: Tải tài nguyên SuSFS (Nhánh kernel-4.19 cho SM8250)
+      - name: Tải tài nguyên SuSFS (Chống lỗi quá tải GitLab)
         if: ${{ inputs.ksu_flavor != 'None' && inputs.enable_susfs }}
         run: |
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 susfs4ksu
-          cp -r susfs4ksu/kernel_patches/fs kernel/
-          cp -r susfs4ksu/kernel_patches/include/linux/susfs.h kernel/include/linux/
+          echo "==> Đang tải susfs4ksu (nhánh kernel-4.19)..."
+          SUCCESS=0
+          
+          # Cách 1: Thử git clone tối đa 5 lần với cấu hình tối ưu HTTP
+          git config --global http.postBuffer 524288000
+          for i in {1..5}; do
+            echo "Thử git clone lần $i/5..."
+            if git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 susfs4ksu; then
+              SUCCESS=1
+              break
+            fi
+            echo "GitLab đang quá tải, đợi $((i * 10)) giây trước khi thử lại..."
+            rm -rf susfs4ksu
+            sleep $((i * 10))
+          done
+
+          # Cách 2: Fallback tải trực tiếp file tar.gz từ GitLab hoặc GitHub Mirror nếu git clone thất bại
+          if [ "$SUCCESS" -eq 0 ]; then
+            echo "==> Chuyển sang tải qua gói nén Archive / Mirror..."
+            mkdir -p susfs4ksu
+            if curl -fLSs --retry 5 "https://gitlab.com/simonpunk/susfs4ksu/-/archive/kernel-4.19/susfs4ksu-kernel-4.19.tar.gz" -o susfs.tar.gz; then
+              tar -xzf susfs.tar.gz --strip-components=1 -C susfs4ksu
+              rm -f susfs.tar.gz
+            else
+              echo "==> Dùng GitHub Mirror dự phòng..."
+              rm -rf susfs4ksu
+              git clone --depth=1 https://github.com/sidex15/susfs4ksu-mirror.git -b kernel-4.19 susfs4ksu || \
+              git clone --depth=1 https://github.com/reon24/susfs4ksu.git -b kernel-4.19 susfs4ksu
+            fi
+          fi
+
+          # Kiểm tra và copy tài nguyên SuSFS vào Kernel
+          if [ ! -d "susfs4ksu/kernel_patches" ]; then
+            echo "LỖI: Không thể tải susfs4ksu!"
+            exit 1
+          fi
+
+          cp -r susfs4ksu/kernel_patches/fs/* kernel/fs/
+          cp -r susfs4ksu/kernel_patches/include/linux/* kernel/include/linux/
           echo "SUSFS_PATCH_DIR=$GITHUB_WORKSPACE/susfs4ksu/kernel_patches" >> $GITHUB_ENV
 
       - name: Tích hợp KernelSU và Áp dụng SuSFS Patch
@@ -66,7 +104,6 @@ jobs:
           FLAVOR="${{ inputs.ksu_flavor }}"
           
           if [ "$FLAVOR" != "None" ]; then
-            # 1. Tải driver KernelSU theo biến thể được chọn
             case "$FLAVOR" in
               "SukiSU-Ultra")
                 echo "==> Thiết lập SukiSU-Ultra..."
@@ -97,13 +134,12 @@ jobs:
               ln -sfn drivers/kernelsu KernelSU
             fi
 
-            # FIX LỖI: Tạo symlink ksu -> . nếu Makefile yêu cầu đường dẫn drivers/kernelsu/ksu
+            # Tạo symlink tương thích nếu Makefile yêu cầu drivers/kernelsu/ksu
             if [ -d "drivers/kernelsu" ] && [ ! -e "drivers/kernelsu/ksu" ]; then
-              echo "==> Tạo symlink tương thích: drivers/kernelsu/ksu -> ."
               ln -sfn . drivers/kernelsu/ksu
             fi
 
-            # 2. Áp dụng Patch SuSFS nếu bật
+            # Áp dụng Patch SuSFS nếu bật
             if [ "${{ inputs.enable_susfs }}" = "true" ]; then
               echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
               KSU_DIR="KernelSU"
@@ -111,15 +147,22 @@ jobs:
               
               if [ -d "$KSU_DIR" ]; then
                 cd "$KSU_DIR"
-                patch -p1 --forward < $SUSFS_PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch || true
-                cd ..
+                for ksu_patch in $SUSFS_PATCH_DIR/KernelSU/*.patch; do
+                  [ -f "$ksu_patch" ] && patch -p1 --forward --fuzz=3 < "$ksu_patch" || true
+                done
+                cd "$GITHUB_WORKSPACE/kernel"
               fi
               
-              patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
+              # Tự động nhận diện file patch của kernel 4.19 (50_add_susfs_in_kernel-4.19.patch hoặc fs_susfs.patch)
+              for k_patch in $SUSFS_PATCH_DIR/*.patch; do
+                if [ -f "$k_patch" ]; then
+                  echo "Đang patch: $k_patch"
+                  patch -p1 --forward --fuzz=3 < "$k_patch" || true
+                fi
+              done
             fi
 
           else
-            # Xử lý trường hợp Non-KSU sạch: Tạo dummy đầy đủ cấu trúc
             echo "==> Chế độ Non-KSU: Tạo dummy drivers/kernelsu/Kconfig & Makefile..."
             mkdir -p drivers/kernelsu/ksu
             echo '# Dummy Kconfig' > drivers/kernelsu/Kconfig
@@ -127,11 +170,9 @@ jobs:
             echo '# Dummy ksu Makefile' > drivers/kernelsu/ksu/Makefile
           fi
 
-          # BẢO HIỂM CUỐI: Đảm bảo ksu/Makefile luôn tồn tại trước khi make
           if [ ! -f "drivers/kernelsu/ksu/Makefile" ] && [ ! -L "drivers/kernelsu/ksu" ]; then
-            ln -sfn . drivers/kernelsu/ksu 2>/dev/null || mkdir -p drivers/kernelsu/ksu && touch drivers/kernelsu/ksu/Makefile
+            ln -sfn . drivers/kernelsu/ksu 2>/dev/null || (mkdir -p drivers/kernelsu/ksu && touch drivers/kernelsu/ksu/Makefile)
           fi
-
 
       - name: Biên dịch Kernel munch
         run: |
@@ -397,6 +438,9 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image "AnyKernel3/${TARGET}-Image"
           elif [ -f "kernel/out/arch/arm64/boot/Image.gz" ]; then
             cp kernel/out/arch/arm64/boot/Image.gz "AnyKernel3/${TARGET}-Image"
+          else
+            echo "LỖI: Không tìm thấy file Image sau khi build!"
+            exit 1
           fi
 
           [ -f "kernel/out/arch/arm64/boot/dtb" ] && cp kernel/out/arch/arm64/boot/dtb "AnyKernel3/${TARGET}-dtb"
