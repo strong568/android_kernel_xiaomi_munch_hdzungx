@@ -36,8 +36,8 @@ jobs:
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex git libssl-dev libelf-dev \
             libncurses5-dev lzop python3 zip cpio liblz4-tool libtinfo5 libncurses5 \
-            gcc-multilib g++-multilib lld llvm zstd libfdt-dev patch \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu
+            lld llvm zstd libfdt-dev patch
+
 
       - name: Tải ZyC-Clang 14.0.6
         run: |
@@ -108,9 +108,8 @@ jobs:
         run: |
           cd kernel
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
 
+          # Thiết lập prefix trỏ vào Clang toolchain
           MAKE_ARGS="
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -123,7 +122,6 @@ jobs:
             STRIP=llvm-strip \
             LLVM=1 \
             LLVM_IAS=1 \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           "
@@ -133,7 +131,47 @@ jobs:
           [ ! -f "arch/arm64/configs/$DEFCONFIG" ] && DEFCONFIG="vendor/munch_defconfig"
 
           mkdir -p out
-          make O=out $MAKE_ARGS$DEFCONFIG
+          make O=out $MAKE_ARGS $DEFCONFIG
+
+          # Ép cứng SELinux Enforcing chuẩn
+          echo "==> Thiết lập SELinux Enforcing..."
+          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
+          ./scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX_BOOTPARAM
+          ./scripts/config --file out/.config --set-val CONFIG_SECURITY_SELINUX_BOOTPARAM_VALUE 1
+          ./scripts/config --file out/.config --disable CONFIG_SECURITY_SELINUX_DEVELOP
+          ./scripts/config --file out/.config --enable CONFIG_ALWAYS_ENFORCE
+
+          # Cấu hình KernelSU và toàn bộ cờ ẩn SuSFS
+          if [ "${{ inputs.ksu_flavor }}" != "None" ]; then
+            ./scripts/config --file out/.config --enable CONFIG_KSU
+            if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+              echo "==> Bật toàn bộ các cờ bảo vệ ẩn Root & SELinux của SuSFS..."
+              for cfg in \
+                CONFIG_KSU_SUSFS \
+                CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
+                CONFIG_KSU_SUSFS_SUS_PATH \
+                CONFIG_KSU_SUSFS_SUS_MOUNT \
+                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSURULES \
+                CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+                CONFIG_KSU_SUSFS_SUS_KSTAT \
+                CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
+                CONFIG_KSU_SUSFS_TRY_UMOUNT \
+                CONFIG_KSU_SUSFS_SPOOF_UNAME \
+                CONFIG_KSU_SUSFS_ENABLE_LOG \
+                CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+                CONFIG_KSU_SUSFS_SPOOF_SELINUX; do
+                ./scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
+              done
+            fi
+          else
+            ./scripts/config --file out/.config --disable CONFIG_KSU
+          fi
+
+          make O=out $MAKE_ARGS olddefconfig
+          make O=out $MAKE_ARGS -j$(nproc --all)
+
 
           # Ép cứng SELinux Enforcing chuẩn
           echo "==> Thiết lập SELinux Enforcing..."
