@@ -17,7 +17,7 @@ on:
           - 'ReSukiSU'
           - 'KowSU'
           - 'None'
-        default: 'KernelSU-Next'
+        default: 'ReSukiSU'
       enable_susfs:
         description: 'Bật cấu hình SuSFS (Ẩn Root VNeID, Ngân hàng - Chỉ áp dụng khi có KSU)'
         required: true
@@ -62,47 +62,66 @@ jobs:
           echo "SUSFS_PATCH_DIR=$GITHUB_WORKSPACE/susfs4ksu/kernel_patches" >> $GITHUB_ENV
 
       - name: Tích hợp KernelSU và Áp dụng SuSFS Patch
-        if: ${{ inputs.ksu_flavor != 'None' }}
         run: |
           cd kernel
           FLAVOR="${{ inputs.ksu_flavor }}"
           
-          case "$FLAVOR" in
-            "SukiSU-Ultra")
-              echo "==> Thiết lập SukiSU-Ultra..."
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s main
-              ;;
-            "backslashxx-KernelSU")
-              echo "==> Thiết lập backslashxx-KernelSU..."
-              curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
-              ;;
-            "ReSukiSU")
-              echo "==> Thiết lập ReSukiSU (BakaSU)..."
-              curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -
-              ;;
-            "KowSU")
-              echo "==> Thiết lập KowSU..."
-              curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" | bash -
-              ;;
-            "KernelSU-Next")
-              echo "==> Thiết lập KernelSU-Next..."
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-              ;;
-          esac
+          if [ "$FLAVOR" != "None" ]; then
+            # 1. Tải driver KernelSU theo biến thể được chọn
+            case "$FLAVOR" in
+              "SukiSU-Ultra")
+                echo "==> Thiết lập SukiSU-Ultra..."
+                curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s main
+                ;;
+              "backslashxx-KernelSU")
+                echo "==> Thiết lập backslashxx-KernelSU..."
+                curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
+                ;;
+              "ReSukiSU")
+                echo "==> Thiết lập ReSukiSU (BakaSU)..."
+                curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -
+                ;;
+              "KowSU")
+                echo "==> Thiết lập KowSU..."
+                curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" | bash -
+                ;;
+              "KernelSU-Next")
+                echo "==> Thiết lập KernelSU-Next..."
+                curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+                ;;
+            esac
 
-          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
-            KSU_DIR="KernelSU"
-            [ ! -d "$KSU_DIR" ] && [ -d "drivers/kernelsu" ] && KSU_DIR="drivers/kernelsu"
-            
-            if [ -d "$KSU_DIR" ]; then
-              cd "$KSU_DIR"
-              patch -p1 --forward < $SUSFS_PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch || true
-              cd ..
+            # Đồng bộ đường dẫn: đảm bảo cả KernelSU và drivers/kernelsu đều trỏ đúng
+            if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+              ln -s ../KernelSU drivers/kernelsu
+            elif [ -d "drivers/kernelsu" ] && [ ! -d "KernelSU" ]; then
+              ln -s drivers/kernelsu KernelSU
             fi
-            
-            patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
+
+            # 2. Áp dụng Patch SuSFS nếu bật
+            if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+              echo "==> Áp dụng Patch SuSFS cho Kernel 4.19..."
+              KSU_DIR="KernelSU"
+              [ ! -d "$KSU_DIR" ] && [ -d "drivers/kernelsu" ] && KSU_DIR="drivers/kernelsu"
+              
+              if [ -d "$KSU_DIR" ]; then
+                cd "$KSU_DIR"
+                patch -p1 --forward < $SUSFS_PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch || true
+                cd ..
+              fi
+              
+              patch -p1 --forward < $SUSFS_PATCH_DIR/fs_susfs.patch || true
+            fi
+
+          else
+            # Xử lý trường hợp Non-KSU: tạo file giả lập để tránh lỗi drivers/Kconfig:237
+            echo "==> Chế độ Non-KSU: Tạo dummy drivers/kernelsu/Kconfig..."
+            mkdir -p drivers/kernelsu
+            touch drivers/kernelsu/Kconfig
+            echo '# Dummy Kconfig for Non-KSU build' > drivers/kernelsu/Kconfig
+            echo 'obj-$(CONFIG_KSU) += ksu/' > drivers/kernelsu/Makefile
           fi
+
 
       - name: Biên dịch Kernel munch
         run: |
